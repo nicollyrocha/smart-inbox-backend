@@ -1,170 +1,140 @@
-from click import prompt
-from fastapi import FastAPI, UploadFile, File, Form
-from fastapi.middleware.cors import CORSMiddleware
-from typing import Optional
-
-from transformers import pipeline
+import os
+import requests
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
+from pydantic import BaseModel
+from dotenv import load_dotenv
 from pypdf import PdfReader
+from fastapi.middleware.cors import CORSMiddleware
+import json
 
-import re
+# =========================
+# CONFIG
+# =========================
 
-STOPWORDS = {
-    "o", "a", "e", "de", "do", "da", "em", "um", "uma",
-    "para", "por", "com", "que", "os", "as"
-}
+load_dotenv()
 
-# -----------------------------
-# Inicialização da aplicação
-# -----------------------------
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+if not GROQ_API_KEY:
+    raise RuntimeError("GROQ_API_KEY não definida nas variáveis de ambiente")
 
-app = FastAPI(title="Smart Inbox AI")
+app = FastAPI(title="Smart Inbox API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # em produção, restringir
+    allow_origins=["*"],  # em produção, coloque o domínio do front
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# -----------------------------
-# Modelo Hugging Face
-# -----------------------------
 
-classifier = pipeline(
-    "zero-shot-classification",
-    model="valhalla/distilbart-mnli-12-3"
-)
+# =========================
+# MODELOS
+# =========================
 
-generator = pipeline(
-    "text2text-generation",
-    model="google/flan-t5-small",
-    max_length=150
-)
+class EmailResponse(BaseModel):
+    category: str
+    response: str
 
-# -----------------------------
-# Funções auxiliares
-# -----------------------------
+# =========================
+# UTILIDADES
+# =========================
 
-
-def preprocess_text(text: str) -> str:
-    text = text.lower()
-    text = re.sub(r"[^a-zà-ú\s]", "", text)
-
-    return " ".join(
-        word for word in text.split()
-        if word not in STOPWORDS
-    )
-
-def extract_text_from_pdf(file) -> str:
-    """
-    Extrai texto de um arquivo PDF.
-    PDFs escaneados (imagem) não são suportados.
-    """
-    reader = PdfReader(file)
+def extract_text_from_pdf(file: UploadFile) -> str:
+    reader = PdfReader(file.file)
     text = ""
-
     for page in reader.pages:
         text += page.extract_text() or ""
-
     return text.strip()
 
+def extract_text_from_txt(file: UploadFile) -> str:
+    return file.file.read().decode("utf-8").strip()
 
-def classify_email(text: str) -> str:
-    """
-    Classifica o email como produtivo ou improdutivo
-    usando zero-shot classification.
-    """
-    labels = ["produtivo", "improdutivo"]
-    result = classifier(text, labels)
-    return result["labels"][0]
+# =========================
+# IA (GROQ)
+# =========================
 
-def generate_reply_ai(email_text: str, category: str) -> str:
-    if category == "produtivo":
-      prompt = f"""
-Write a polite and professional reply to an email where the sender is requesting information or action:
+def analyze_email_with_ai(email_text: str) -> EmailResponse:
+    prompt = f"""
+Você é um assistente de atendimento por email.
+
+1- Classifique o email abaixo como:
+- produtivo
+- improdutivo
+
+2- Gere uma resposta educada, clara e profissional em português brasileiro.
+
+Email:
+\"\"\"{email_text}\"\"\"
+
+Responda EXATAMENTE neste formato JSON:
+{{
+  "category": "produtivo ou improdutivo",
+  "response": "texto da resposta"
+}}
 """
 
-
-      result = generator(
-        prompt,
-        max_length=60,
-        do_sample=True,
-        temperature=0.8,
-        repetition_penalty=2.2,
-        no_repeat_ngram_size=3,
+    response = requests.post(
+        "https://api.groq.com/openai/v1/chat/completions",
+        headers={
+            "Authorization": f"Bearer {GROQ_API_KEY}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": "llama-3.1-8b-instant",
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.2,
+        },
+        timeout=60,
     )
 
-      return result[0]["generated_text"].strip()
-    else:
-            prompt = f"""
-            Write a polite, professional and short reply to an email that does not require any action or answer, like a thank you note or an acknowledgment.
-            Do NOT offer any additional information or tell the sender you'll contact them. It's just a simple acknowledgment.
-            """
+    if response.status_code != 200:
+        raise RuntimeError(f"Erro Groq {response.status_code}: {response.text}")
 
+    content = response.json()["choices"][0]["message"]["content"]
 
-    result = generator(
-        prompt,
-        max_length=60,
-        do_sample=True,
-        temperature=0.8,
-        repetition_penalty=2.2,
-        no_repeat_ngram_size=3,
-    )
+    try:
+        parsed = json.loads(content)
+        return EmailResponse(
+            category=parsed["category"],
+            response=parsed["response"],
+        )
+    except Exception:
+        raise RuntimeError(f"Resposta inválida da IA: {content}")
 
-    return result[0]["generated_text"].strip()
-
-
-def build_final_reply(ai_suggestion: str, category: str) -> str:
-    if category == "produtivo":
-        return f"Hello! {ai_suggestion} Our team will get back to you shortly."
-    else:
-        return f"Hello! {ai_suggestion}"
-
-
-
-# -----------------------------
-# Endpoint principal
-# -----------------------------
-
-@app.post("/analyze")
-async def analyze_email(
-    text: Optional[str] = Form(None),
-    file: Optional[UploadFile] = File(None),
-):
-    if not text and not file:
-        return {"error": "No content provided"}
-
-    # Decide a origem do conteúdo
-    if file:
-        if file.content_type == "application/pdf":
-            content = extract_text_from_pdf(file.file)
-        else:
-            # TXT
-            content = (await file.read()).decode("utf-8")
-    else:
-        content = text
-
-    # Evita textos vazios
-    if not content or not content.strip():
-        return {"error": "Não foi possível extrair texto do email"}
-
-    # Classificação + resposta
-    processed_text = preprocess_text(content)
-    category = classify_email(processed_text)
-    ai_suggestion = generate_reply_ai(content, category)
-    reply = build_final_reply(ai_suggestion, category)
-
-    return {
-        "category": category,
-        "reply": reply,
-        "model": "valhalla/distilbart-mnli-12-3 + google/flan-t5-base"
-    }
-
-# -----------------------------
-# Endpoint de teste
-# -----------------------------
+# =========================
+# ENDPOINTS
+# =========================
 
 @app.get("/")
-def root():
-    return {"status": "API Smart Inbox rodando"}
+def healthcheck():
+    return {"status": "ok"}
+
+@app.post("/analyze", response_model=EmailResponse)
+async def analyze_email(
+    text: str = Form(None),
+    file: UploadFile = File(None),
+):
+    if not text and not file:
+        raise HTTPException(status_code=400, detail="Envie texto ou arquivo")
+
+    content = ""
+
+    if text:
+        content = text.strip()
+
+    elif file:
+        if file.filename.endswith(".pdf"):
+            content = extract_text_from_pdf(file)
+        elif file.filename.endswith(".txt"):
+            content = extract_text_from_txt(file)
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="Formato não suportado. Use .txt ou .pdf",
+            )
+
+    if not content:
+        raise HTTPException(status_code=400, detail="Conteúdo vazio")
+
+    return analyze_email_with_ai(content)
