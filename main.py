@@ -59,8 +59,8 @@ def analyze_email_with_ai(email_text: str) -> EmailResponse:
 Você é um assistente de atendimento por email.
 
 1- Classifique o email abaixo como:
-- produtivo
-- improdutivo
+- produtivo (emails que requerem uma ação ou resposta específica (ex.: solicitações de suporte técnico, atualização sobre casos em aberto, dúvidas sobre o sistema).)
+- improdutivo (emails que não necessitam de uma ação imediata (ex.: mensagens de felicitações, agradecimentos).)
 
 2- Gere uma resposta educada, clara e profissional em português brasileiro.
 
