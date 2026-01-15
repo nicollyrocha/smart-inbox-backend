@@ -6,6 +6,13 @@ from typing import Optional
 from transformers import pipeline
 from pypdf import PdfReader
 
+import re
+
+STOPWORDS = {
+    "o", "a", "e", "de", "do", "da", "em", "um", "uma",
+    "para", "por", "com", "que", "os", "as"
+}
+
 # -----------------------------
 # Inicialização da aplicação
 # -----------------------------
@@ -38,6 +45,16 @@ generator = pipeline(
 # -----------------------------
 # Funções auxiliares
 # -----------------------------
+
+
+def preprocess_text(text: str) -> str:
+    text = text.lower()
+    text = re.sub(r"[^a-zà-ú\s]", "", text)
+
+    return " ".join(
+        word for word in text.split()
+        if word not in STOPWORDS
+    )
 
 def extract_text_from_pdf(file) -> str:
     """
@@ -133,7 +150,8 @@ async def analyze_email(
         return {"error": "Não foi possível extrair texto do email"}
 
     # Classificação + resposta
-    category = classify_email(content)
+    processed_text = preprocess_text(content)
+    category = classify_email(processed_text)
     ai_suggestion = generate_reply_ai(content, category)
     reply = build_final_reply(ai_suggestion, category)
 
