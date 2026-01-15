@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 from pypdf import PdfReader
 from fastapi.middleware.cors import CORSMiddleware
 import json
+import spacy
 
 # =========================
 # CONFIG
@@ -27,6 +28,25 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# =========================
+# NLP (spaCy)
+# =========================
+
+# Baixe o modelo uma vez:
+# python -m spacy download pt_core_news_sm
+nlp = spacy.load("pt_core_news_sm")
+
+def preprocess_text(text: str) -> str:
+    """
+    Pré-processamento do texto:
+    - converte para minúsculas
+    - remove stop words
+    - aplica lemmatização
+    - remove espaços extras
+    """
+    doc = nlp(text.lower())
+    processed_tokens = [token.lemma_ for token in doc if not token.is_stop and token.is_alpha]
+    return " ".join(processed_tokens)
 
 # =========================
 # MODELOS
@@ -122,7 +142,6 @@ async def analyze_email(
 
     if text:
         content = text.strip()
-
     elif file:
         if file.filename.endswith(".pdf"):
             content = extract_text_from_pdf(file)
@@ -137,4 +156,9 @@ async def analyze_email(
     if not content:
         raise HTTPException(status_code=400, detail="Conteúdo vazio")
 
-    return analyze_email_with_ai(content)
+    # =========================
+    # Pré-processamento NLP
+    # =========================
+    processed_content = preprocess_text(content)
+
+    return analyze_email_with_ai(processed_content)
