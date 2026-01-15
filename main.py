@@ -32,8 +32,6 @@ app.add_middleware(
 # NLP (spaCy)
 # =========================
 
-# Baixe o modelo uma vez:
-# python -m spacy download pt_core_news_sm
 nlp = spacy.load("pt_core_news_sm")
 
 def preprocess_text(text: str) -> str:
