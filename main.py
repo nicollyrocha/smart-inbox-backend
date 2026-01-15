@@ -1,3 +1,4 @@
+from click import prompt
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional
@@ -30,7 +31,7 @@ classifier = pipeline(
 
 generator = pipeline(
     "text2text-generation",
-    model="google/flan-t5-base",
+    model="google/flan-t5-small",
     max_length=150
 )
 
@@ -62,28 +63,46 @@ def classify_email(text: str) -> str:
     return result["labels"][0]
 
 def generate_reply_ai(email_text: str, category: str) -> str:
-     prompt = (
-        "Write a professional reply in Brazilian Portuguese.\n"
-        "Do not repeat the email content.\n"
-        f"Category: {category}\n"
-        "Reply:"
-    )
+    if category == "produtivo":
+      prompt = f"""
+Write a polite and professional reply to an email where the sender is requesting information or action:
+"""
 
-     result = generator(
+
+      result = generator(
         prompt,
+        max_length=60,
         do_sample=True,
         temperature=0.8,
-        top_p=0.9,
-        repetition_penalty=1.8,
+        repetition_penalty=2.2,
+        no_repeat_ngram_size=3,
     )
 
-     return result[0]["generated_text"].strip()
+      return result[0]["generated_text"].strip()
+    else:
+            prompt = f"""
+            Write a polite, professional and short reply to an email that does not require any action or answer, like a thank you note or an acknowledgment.
+            Do NOT offer any additional information or tell the sender you'll contact them. It's just a simple acknowledgment.
+            """
+
+
+    result = generator(
+        prompt,
+        max_length=60,
+        do_sample=True,
+        temperature=0.8,
+        repetition_penalty=2.2,
+        no_repeat_ngram_size=3,
+    )
+
+    return result[0]["generated_text"].strip()
+
 
 def build_final_reply(ai_suggestion: str, category: str) -> str:
     if category == "produtivo":
-        return f"Olá! {ai_suggestion} Nossa equipe retornará em breve."
+        return f"Hello! {ai_suggestion} Our team will get back to you shortly."
     else:
-        return f"Olá! {ai_suggestion} Agradecemos o contato."
+        return f"Hello! {ai_suggestion}"
 
 
 
@@ -97,7 +116,7 @@ async def analyze_email(
     file: Optional[UploadFile] = File(None),
 ):
     if not text and not file:
-        return {"error": "Nenhum conteúdo enviado"}
+        return {"error": "No content provided"}
 
     # Decide a origem do conteúdo
     if file:
